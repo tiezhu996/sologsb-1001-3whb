@@ -36,6 +36,29 @@ const statusType = (status: Cue['status']) => status === 'reviewed' ? 'success' 
 function updateSelected(patch: Partial<Cue>, label = 'update-cue') {
   if (selectedCue.value) store.updateCue(selectedCue.value.id, patch, label)
 }
+function runSplit(id: string) {
+  const reason = store.splitCue(id)
+  if (reason) ElMessage.warning(store.t(reason))
+}
+function runMerge(id: string) {
+  const reason = store.mergeNext(id)
+  if (reason) ElMessage.warning(store.t(reason))
+}
+function runMove(id: string, direction: -1 | 1) {
+  const reason = store.moveCue(id, direction)
+  if (reason) ElMessage.warning(store.t(reason))
+}
+function requestDelete(id: string) {
+  const cue = project.value.cues.find((item) => item.id === id)
+  if (!cue) return
+  if (cue.locked) {
+    ElMessage.warning(store.t('lockedDelete'))
+    return
+  }
+  ElMessageBox.confirm(store.t('confirmDelete'), { type: 'warning', confirmButtonText: store.t('delete') })
+    .then(() => store.deleteCue(id))
+    .catch(() => undefined)
+}
 function tone(text: string) {
   const polite = (text.match(/您|请|劳驾|麻烦|敬请/g) ?? []).length
   const casual = (text.match(/你|咱们|[？?]$/g) ?? []).length
@@ -78,11 +101,6 @@ async function importFile(event: Event) {
   } finally {
     input.value = ''
   }
-}
-function requestDelete(id: string) {
-  ElMessageBox.confirm(store.t('confirmDelete'), { type: 'warning', confirmButtonText: store.t('delete') })
-    .then(() => store.deleteCue(id))
-    .catch(() => undefined)
 }
 function createSnapshot() {
   store.createSnapshot(snapshotName.value)
@@ -251,8 +269,8 @@ const handleOffline = () => setOnline(false)
               <p class="target-text" :class="{ empty: !cue.target }">{{ cue.target || '尚未填写译文' }}</p>
             </div>
             <div class="cue-quick-actions">
-              <el-button size="small" text :icon="MagicStick" @click.stop="store.splitCue(cue.id)">{{ store.t('split') }}</el-button>
-              <el-button size="small" text :icon="Files" @click.stop="store.mergeNext(cue.id)">{{ store.t('merge') }}</el-button>
+              <el-button size="small" text :icon="MagicStick" @click.stop="runSplit(cue.id)">{{ store.t('split') }}</el-button>
+              <el-button size="small" text :icon="Files" @click.stop="runMerge(cue.id)">{{ store.t('merge') }}</el-button>
               <el-button size="small" text :icon="Delete" @click.stop="requestDelete(cue.id)" />
             </div>
           </article>
@@ -291,8 +309,8 @@ const handleOffline = () => setOnline(false)
           </el-select>
           <div class="inspector-actions">
             <el-button :icon="selectedCue.locked ? Unlock : Lock" @click="store.toggleLock(selectedCue.id)">{{ selectedCue.locked ? store.t('unlock') : store.t('lock') }}</el-button>
-            <el-button @click="store.moveCue(selectedCue.id, -1)">↑ {{ store.t('moveUp') }}</el-button>
-            <el-button @click="store.moveCue(selectedCue.id, 1)">↓ {{ store.t('moveDown') }}</el-button>
+            <el-button @click="runMove(selectedCue.id, -1)">↑ {{ store.t('moveUp') }}</el-button>
+            <el-button @click="runMove(selectedCue.id, 1)">↓ {{ store.t('moveDown') }}</el-button>
           </div>
 
           <div class="check-card">
