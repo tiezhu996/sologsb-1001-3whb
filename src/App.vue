@@ -9,6 +9,7 @@ import {
 import { useEditorStore } from './store/editor'
 import type { Cue, CueConflict } from './types'
 import { formatTime } from './utils/subtitle'
+import type { MessageKey } from './i18n'
 
 const store = useEditorStore()
 const { document: project, selectedCue, selectedCueId, visibleCues, saveState, conflict, online, timelineZoom, actorFilter } = storeToRefs(store)
@@ -79,9 +80,18 @@ async function importFile(event: Event) {
     input.value = ''
   }
 }
+// 结构类动作（拆分/合并/移动）受锁定或边界限制时，向用户说明原因
+function explain(result: MessageKey | null) {
+  if (result) ElMessage.warning(store.t(result))
+}
 function requestDelete(id: string) {
+  const cue = project.value.cues.find((item) => item.id === id)
+  if (cue?.locked) {
+    ElMessage.warning(store.t('lockedDelete'))
+    return
+  }
   ElMessageBox.confirm(store.t('confirmDelete'), { type: 'warning', confirmButtonText: store.t('delete') })
-    .then(() => store.deleteCue(id))
+    .then(() => explain(store.deleteCue(id)))
     .catch(() => undefined)
 }
 function createSnapshot() {
@@ -251,8 +261,8 @@ const handleOffline = () => setOnline(false)
               <p class="target-text" :class="{ empty: !cue.target }">{{ cue.target || '尚未填写译文' }}</p>
             </div>
             <div class="cue-quick-actions">
-              <el-button size="small" text :icon="MagicStick" @click.stop="store.splitCue(cue.id)">{{ store.t('split') }}</el-button>
-              <el-button size="small" text :icon="Files" @click.stop="store.mergeNext(cue.id)">{{ store.t('merge') }}</el-button>
+              <el-button size="small" text :icon="MagicStick" @click.stop="explain(store.splitCue(cue.id))">{{ store.t('split') }}</el-button>
+              <el-button size="small" text :icon="Files" @click.stop="explain(store.mergeNext(cue.id))">{{ store.t('merge') }}</el-button>
               <el-button size="small" text :icon="Delete" @click.stop="requestDelete(cue.id)" />
             </div>
           </article>
@@ -291,8 +301,8 @@ const handleOffline = () => setOnline(false)
           </el-select>
           <div class="inspector-actions">
             <el-button :icon="selectedCue.locked ? Unlock : Lock" @click="store.toggleLock(selectedCue.id)">{{ selectedCue.locked ? store.t('unlock') : store.t('lock') }}</el-button>
-            <el-button @click="store.moveCue(selectedCue.id, -1)">↑ {{ store.t('moveUp') }}</el-button>
-            <el-button @click="store.moveCue(selectedCue.id, 1)">↓ {{ store.t('moveDown') }}</el-button>
+            <el-button @click="explain(store.moveCue(selectedCue.id, -1))">↑ {{ store.t('moveUp') }}</el-button>
+            <el-button @click="explain(store.moveCue(selectedCue.id, 1))">↓ {{ store.t('moveDown') }}</el-button>
           </div>
 
           <div class="check-card">

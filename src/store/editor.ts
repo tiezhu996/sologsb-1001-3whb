@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
-import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
+import { joinCueText, parseScript, parseSrt, splitBilingual, toSrt } from '../utils/subtitle'
 import { translate, type MessageKey } from '../i18n'
 
 const DOCUMENT_ID = 'subtitle-dubbing-document'
@@ -224,13 +224,32 @@ export const useEditorStore = defineStore('subtitle-editor', {
     toggleLock(id: string) {
       this.updateCue(id, { locked: !this.document.cues.find((cue) => cue.id === id)?.locked }, 'toggle-lock')
     },
-    splitCue(id: string) {
+    splitCue(id: string): MessageKey | null {
       const source = this.document.cues.find((cue) => cue.id === id)
-      if (!source || source.locked) return
-      const ratio = Math.max(0.25, Math.min(0.75, source.source.length ? 0.5 : 0.5))
-      const middle = Number((source.start + (source.end - source.start) * ratio).toFixed(2))
-      const sourceMid = Math.max(1, Math.round(source.source.length * ratio))
-      const targetMid = Math.max(1, Math.round(source.target.length * ratio))
+      if (!source) return null
+      if (source.locked) return 'lockedSplit'
+      const split = splitBilingual(source.source, source.target)
+      // 两条都必须留下非空文本，否则没有可断开的内容
+      if (!split.sourceBefore || !split.sourceAfter) return 'splitUnavailable'
+      const middle = Number((source.start + (source.end - source.start) * split.ratio).toFixed(2))
+      if (middle <= source.start + 0.2 || middle >= source.end - 0.2) return 'splitTooShort'
+      const terms = this.document.terms
+      const partTerms = (part: string, other: string, isFirst: boolean): string[] => source.termIds.filter((termId) => {
+        const term = terms.find((item) => item.id === termId)
+        if (!term) return false
+        const hit = (text: string) => text.includes(term.target) || text.toLowerCase().includes(term.source.toLowerCase())
+        const inPart = hit(part)
+        const inOther = hit(other)
+        if (inPart && !inOther) return true
+        if (!inPart && inOther) return false
+        // 两段都含（或都不含）时统一保留在前段，避免重复或丢失
+        return isFirst
+      })
+      const firstText = `${split.sourceBefore}${split.targetBefore}`
+      const secondText = `${split.sourceAfter}${split.targetAfter}`
+      const firstTerms = partTerms(firstText, secondText, true)
+      const secondTerms = partTerms(secondText, firstText, false)
+      const secondEnd = source.end
       const secondId = makeId('cue')
       this.commit('split', (cues) => {
         const index = cues.findIndex((cue) => cue.id === id)
@@ -239,50 +258,74 @@ export const useEditorStore = defineStore('subtitle-editor', {
           ...cue,
           id: secondId,
           start: middle,
-          source: cue.source.slice(sourceMid).trim(),
-          target: cue.target.slice(targetMid).trim(),
+          end: secondEnd,
+          source: split.sourceAfter,
+          target: split.targetAfter,
+          termIds: secondTerms,
           status: 'draft',
           locked: false,
         }
         cue.end = middle
-        cue.source = cue.source.slice(0, sourceMid).trim()
-        cue.target = cue.target.slice(0, targetMid).trim()
+        cue.source = split.sourceBefore
+        cue.target = split.targetBefore
+        cue.termIds = firstTerms
         cue.status = 'draft'
         cues.splice(index + 1, 0, second)
       }, secondId)
+      return null
     },
-    mergeNext(id: string) {
+    mergeNext(id: string): MessageKey | null {
       const index = this.document.cues.findIndex((cue) => cue.id === id)
       const current = this.document.cues[index]
       const next = this.document.cues[index + 1]
-      if (!current || !next || current.locked || next.locked) return
+      if (!current || !next) return null
+      if (current.locked) return 'lockedMergeCurrent'
+      if (next.locked) return 'lockedMergeNext'
       this.commit('merge', (cues) => {
         const item = cues[index]
         const following = cues[index + 1]
         item.end = following.end
-        item.source = `${item.source} ${following.source}`.trim()
-        item.target = `${item.target} ${following.target}`.trim()
+        item.source = joinCueText(item.source, following.source)
+        item.target = joinCueText(item.target, following.target)
+        // 合并两条的关联术语并去重，顺序以当前条为先
         item.termIds = [...new Set([...item.termIds, ...following.termIds])]
         item.status = 'draft'
         cues.splice(index + 1, 1)
       }, id)
+      return null
     },
-    moveCue(id: string, direction: -1 | 1) {
+    moveCue(id: string, direction: -1 | 1): MessageKey | null {
       const index = this.document.cues.findIndex((cue) => cue.id === id)
       const target = index + direction
-      if (index < 0 || target < 0 || target >= this.document.cues.length) return
+      if (index < 0) return null
+      if (this.document.cues[index].locked) return 'lockedMove'
+      if (target < 0 || target >= this.document.cues.length) return 'moveBoundary'
+      if (this.document.cues[target].locked) return 'lockedMoveNeighbor'
       this.commit('move', (cues) => {
-        const [item] = cues.splice(index, 1)
-        cues.splice(target, 0, item)
+        // 与相邻条互换时间段（各自时长不变），同时交换数组位置，
+        // 保证列表、时间轴与 SRT 导出顺序一致
+        const item = cues[index]
+        const neighbor = cues[target]
+        const itemStart = item.start
+        const itemEnd = item.end
+        item.start = neighbor.start
+        item.end = neighbor.end
+        neighbor.start = itemStart
+        neighbor.end = itemEnd
+        const [removed] = cues.splice(index, 1)
+        cues.splice(target, 0, removed)
       }, id)
+      return null
     },
-    deleteCue(id: string) {
+    deleteCue(id: string): MessageKey | null {
       const cue = this.document.cues.find((item) => item.id === id)
-      if (!cue || cue.locked) return
+      if (!cue) return null
+      if (cue.locked) return 'lockedDelete'
       this.commit('delete', (cues) => {
         const index = cues.findIndex((item) => item.id === id)
         if (index >= 0) cues.splice(index, 1)
       }, this.document.cues[Math.max(0, this.document.cues.findIndex((item) => item.id === id) - 1)]?.id ?? null)
+      return null
     },
     createSnapshot(name: string) {
       const snapshot: Snapshot = { id: makeId('snapshot'), name: name.trim() || `v${this.document.snapshots.length + 1}`, createdAt: Date.now(), cues: cloneCues(this.document.cues) }
